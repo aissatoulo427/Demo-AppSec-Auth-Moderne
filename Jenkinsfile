@@ -61,6 +61,13 @@ pipeline {
         timestamps()
     }
 
+    // Jenkins tourne en local : GitHub ne peut pas lui envoyer de webhook.
+    // Il interroge donc lui-même le dépôt toutes les 2 minutes et ne lance
+    // un build que si un nouveau commit a été poussé.
+    triggers {
+        pollSCM('H/2 * * * *')
+    }
+
     stages {
 
         // =====================================================================
