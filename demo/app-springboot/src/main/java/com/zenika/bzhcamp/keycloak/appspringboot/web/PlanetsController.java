@@ -12,7 +12,6 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 @Controller
@@ -33,18 +32,18 @@ public class PlanetsController {
         this.request = request;
     }
 
-    @RequestMapping(value = "/")
+    @GetMapping(value = "/")
     public String landing() {
         return "landing";
     }
 
-    @RequestMapping(value = "/logout")
+    @GetMapping(value = "/logout")
     public String handleLogout(HttpServletRequest request) throws ServletException {
         request.logout();
         return "redirect:/";
     }
 
-    @RequestMapping(value = "/about")
+    @GetMapping(value = "/about")
     public String about() {
         return "about";
     }
@@ -65,7 +64,7 @@ public class PlanetsController {
      *
      * Note : ce rôle doit être créé dans le realm Keycloak et assigné à l'utilisateur.
      */
-    @RequestMapping(value = "/planets")
+    @GetMapping(value = "/planets")
     @PreAuthorize("hasRole('user')")
     public String handlePlanetsRequest(Principal principal, Model model) {
         logger.info("User {} accessed /planets", principal.getName());

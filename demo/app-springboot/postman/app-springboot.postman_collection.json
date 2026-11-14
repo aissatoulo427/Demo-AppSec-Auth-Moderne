@@ -1,0 +1,252 @@
+{
+  "info": {
+    "name": "App Spring Boot (Keycloak)",
+    "description": "Collection Postman de l'application app-springboot (port 8090), sécurisée par Keycloak (realm bzhcamp).\n\n**Avant de commencer** : renseigner les variables de collection `client_secret` (secret du client `app-springboot` dans Keycloak) et `password` (mot de passe de `testuser`). Ne jamais committer ces valeurs.\n\n**Ordre conseillé** :\n1. `Keycloak / Obtenir un jeton` → stocke `access_token` et `refresh_token`\n2. Lancer les autres requêtes\n\nLes pages renvoient du HTML (FreeMarker), pas du JSON.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8090" },
+    { "key": "keycloak_url", "value": "http://localhost:8080" },
+    { "key": "realm", "value": "bzhcamp" },
+    { "key": "client_id", "value": "app-springboot" },
+    { "key": "client_secret", "value": "" },
+    { "key": "username", "value": "testuser" },
+    { "key": "password", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "refresh_token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Keycloak",
+      "description": "Obtention et rafraîchissement du jeton d'accès auprès de Keycloak.",
+      "item": [
+        {
+          "name": "Obtenir un jeton (password grant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token présent', () => pm.expect(body.access_token).to.be.a('string'));",
+                  "pm.collectionVariables.set('access_token', body.access_token);",
+                  "pm.collectionVariables.set('refresh_token', body.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "password" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "client_secret", "value": "{{client_secret}}" },
+                { "key": "username", "value": "{{username}}" },
+                { "key": "password", "value": "{{password}}" },
+                { "key": "scope", "value": "openid" }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token",
+              "host": ["{{keycloak_url}}"],
+              "path": ["realms", "{{realm}}", "protocol", "openid-connect", "token"]
+            },
+            "description": "Resource Owner Password Credentials grant (Direct Access Grants activé sur le client `app-springboot`). Pratique pour les tests, mais déconseillé en production (OAuth 2.1 le supprime) : préférer le flux Authorization Code + PKCE."
+          }
+        },
+        {
+          "name": "Rafraîchir le jeton",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('access_token', body.access_token);",
+                  "pm.collectionVariables.set('refresh_token', body.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "refresh_token" },
+                { "key": "client_id", "value": "{{client_id}}" },
+                { "key": "client_secret", "value": "{{client_secret}}" },
+                { "key": "refresh_token", "value": "{{refresh_token}}" }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_url}}/realms/{{realm}}/protocol/openid-connect/token",
+              "host": ["{{keycloak_url}}"],
+              "path": ["realms", "{{realm}}", "protocol", "openid-connect", "token"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pages publiques",
+      "item": [
+        {
+          "name": "Accueil",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Réponse HTML', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/html'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] },
+            "description": "Page d'accueil, accessible sans authentification."
+          }
+        },
+        {
+          "name": "À propos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Réponse HTML', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/html'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/about", "host": ["{{base_url}}"], "path": ["about"] },
+            "description": "Page « À propos », accessible sans authentification."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pages protégées",
+      "item": [
+        {
+          "name": "Planètes - sans jeton",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Accès refusé (redirection login ou 401)', () => pm.expect(pm.response.code).to.be.oneOf([302, 401]));"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/planets", "host": ["{{base_url}}"], "path": ["planets"] },
+            "description": "Test de sécurité : sans authentification, l'accès doit être refusé (redirection vers le login Keycloak ou 401). Les redirections ne sont pas suivies pour pouvoir le vérifier."
+          }
+        },
+        {
+          "name": "Planètes - avec jeton Bearer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Authentifié : 200 (rôle mappé) ou 403 (limitation connue)', () => pm.expect(pm.response.code).to.be.oneOf([200, 403]));"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/planets", "host": ["{{base_url}}"], "path": ["planets"] },
+            "description": "Page protégée par `@PreAuthorize(\"hasRole('user')\")`.\n\n**Limitation connue** : en mode Bearer (Resource Server), `userAuthoritiesMapperForKeycloak` n'est pas appliqué ; le jeton ne donne que des autorités `SCOPE_*`, donc la réponse attendue aujourd'hui est **403**. Le parcours nominal (200) passe par le login navigateur."
+          }
+        },
+        {
+          "name": "Planètes - jeton invalide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Statut 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "jeton.invalide.falsifie", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/planets", "host": ["{{base_url}}"], "path": ["planets"] },
+            "description": "Test de sécurité : un jeton falsifié doit être rejeté (401)."
+          }
+        },
+        {
+          "name": "Déconnexion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Redirection 302', () => pm.response.to.have.status(302));"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/logout", "host": ["{{base_url}}"], "path": ["logout"] },
+            "description": "Termine la session locale puis redirige vers `/`."
+          }
+        }
+      ]
+    }
+  ]
+}

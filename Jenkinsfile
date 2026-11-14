@@ -50,6 +50,8 @@ pipeline {
         IMAGE_TAG         = "v${BUILD_NUMBER}"
         SONAR_KEY_APP     = 'poc-keycloak-app'
         SONAR_KEY_SVC     = 'poc-keycloak-service'
+        // Nom complet du plugin : le préfixe "sonar:" seul n'est plus résolu par Maven
+        SONAR_MVN_PLUGIN  = 'org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211'
     }
 
     options {
@@ -155,7 +157,7 @@ pipeline {
                 withSonarQubeEnv('SonarQube') {
                     dir('demo/app-springboot') {
                         sh '''
-                            mvn sonar:sonar \
+                            mvn ${SONAR_MVN_PLUGIN}:sonar \
                                 -Dsonar.projectKey=${SONAR_KEY_APP} \
                                 -Dsonar.projectName="POC Keycloak - App" \
                                 -Dsonar.java.source=17 \
@@ -165,7 +167,7 @@ pipeline {
                     }
                     dir('demo/service-springboot-rest') {
                         sh '''
-                            mvn sonar:sonar \
+                            mvn ${SONAR_MVN_PLUGIN}:sonar \
                                 -Dsonar.projectKey=${SONAR_KEY_SVC} \
                                 -Dsonar.projectName="POC Keycloak - Service REST" \
                                 -Dsonar.java.source=17 \
