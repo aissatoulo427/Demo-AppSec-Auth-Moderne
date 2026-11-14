@@ -4,7 +4,7 @@
 
 ```
 PHASE 1 → Démarrer les outils CI
-PHASE 2 → Configurer Jenkins (plugins + outils + credentials)
+PHASE 2 → Configurer Jenkins (plugins + outils) + secrets dans Vault
 PHASE 3 → Configurer SonarQube (token + webhook + quality gate)
 PHASE 4 → Installer Trivy dans Jenkins
 PHASE 5 → Créer le job Jenkins Pipeline
@@ -151,58 +151,62 @@ Tu dois voir :
 Ces deux outils ont été configurés par le script `02-tools.groovy` au démarrage.
 Si absents, va dans **Tools** et ajoute-les manuellement avec ces mêmes valeurs.
 
-### 2.4 — Créer les Credentials
+### 2.4 — Secrets du pipeline : HashiCorp Vault
 
-**Manage Jenkins → Credentials → System → Global credentials → Add Credentials**
+Les secrets ne sont **plus** saisis dans Jenkins Credentials : ils sont stockés dans
+**HashiCorp Vault** (conteneur `vault`, mode dev) et lus par le pipeline via `withVault`.
 
-Crée chaque credential dans l'ordre :
-
-**Credential 1 — Docker Hub**
 ```
-Kind     : Username with password
-Username : moustaphisene
-Password : <ton token Docker Hub>
-ID       : dockerhub-credentials
-```
-> Pour créer un token Docker Hub : hub.docker.com → Account Settings → Security → New Access Token
-
-**Credential 2 — NVD API Key (OWASP)**
-```
-Kind   : Secret text
-Secret : <ta clé NVD>
-ID     : nvd-api-key
-```
-> Créer la clé sur https://nvd.nist.gov/developers/request-an-api-key (gratuit, formulaire rapide).
-> Sans clé : le premier scan OWASP peut prendre 30 à 60 minutes.
-
-**Credential 3 — Keycloak URL UAT**
-```
-Kind   : Secret text
-Secret : http://host.docker.internal:8080
-ID     : keycloak-url-uat
-```
-> `host.docker.internal` permet au conteneur Jenkins d'atteindre ton Keycloak local.
-
-**Credential 4 — Keycloak URL PREPROD**
-```
-Kind   : Secret text
-Secret : http://host.docker.internal:8080
-ID     : keycloak-url-preprod
+secrets.env ──► vault-init ──► Vault (KV v2)  ◄── AppRole "jenkins-ci" (lecture seule) ── Jenkins
 ```
 
-**Credential 5 — Secret client Keycloak UAT**
-```
-Kind   : Secret text
-Secret : <valeur de KEYCLOAK_CLIENT_SECRET>
-ID     : keycloak-client-secret-uat
+| Élément | Rôle |
+|---|---|
+| `ci/vault/init.sh` | Active AppRole, crée la policy, génère le `secret_id`, peuple les secrets |
+| `ci/vault/jenkins-policy.hcl` | Policy **lecture seule** sur `secret/data/ci/*` (moindre privilège) |
+| `ci/jenkins/init.groovy.d/03-vault.groovy` | Crée le credential `vault-approle` et configure le plugin Vault |
+| volume `vault_approle` | Transmet `role_id` / `secret_id` de `vault-init` à Jenkins |
+
+**Étape 1 — Renseigner les secrets (avant le `docker compose up`)**
+
+```bash
+cp ci/vault/secrets.env.example ci/vault/secrets.env   # ignoré par git
+# puis éditer ci/vault/secrets.env : DOCKERHUB_TOKEN, NVD_API_KEY, KEYCLOAK_CLIENT_SECRET_*...
 ```
 
-**Credential 6 — Secret client Keycloak PREPROD**
+> Docker Hub token : hub.docker.com → Account Settings → Security → New Access Token
+> Clé NVD : https://nvd.nist.gov/developers/request-an-api-key (sans clé, 1er scan OWASP = 30-60 min)
+
+**Étape 2 — Vérifier l'initialisation**
+
+```bash
+docker logs vault-init      # doit finir par "[vault-init] Terminé"
+docker logs jenkins 2>&1 | grep "\[INIT\] Vault"   # "Vault configuré → http://vault:8200"
 ```
-Kind   : Secret text
-Secret : <valeur de KEYCLOAK_CLIENT_SECRET>
-ID     : keycloak-client-secret-preprod
+
+**Étape 3 — Consulter / modifier un secret**
+
+UI : http://localhost:8200 (méthode *Token*, token `root`) → `secret/` → `ci/`
+
+ou en CLI :
+
+```bash
+docker exec -e VAULT_TOKEN=root vault vault kv get   secret/ci/dockerhub
+docker exec -e VAULT_TOKEN=root vault vault kv patch secret/ci/dockerhub password=<nouveau_token>
 ```
+
+| Chemin Vault | Clés | Utilisé par le stage |
+|---|---|---|
+| `secret/ci/dockerhub` | `username`, `password` | Docker Push, UAT/PREPROD Deploy |
+| `secret/ci/nvd` | `api_key` | OWASP Dependency Check |
+| `secret/ci/keycloak-uat` | `url`, `client_secret` | UAT - Deploy |
+| `secret/ci/keycloak-preprod` | `url`, `client_secret` | PREPROD - Deploy |
+
+> ⚠ **Mode dev** : Vault stocke tout **en mémoire**. Après un redémarrage du conteneur `vault`,
+> relancer `docker compose -f ci/docker-compose-ci-tools.yml up -d` : `vault-init` recrée
+> l'AppRole (même `secret_id`) et repeuple les secrets depuis `secrets.env`.
+> Les secrets modifiés via l'UI/CLI sont perdus — reporter les vraies valeurs dans `secrets.env`.
+> En production : stockage persistant (Raft), TLS, unseal (auto-unseal KMS), pas de token root.
 
 ---
 
@@ -411,6 +415,9 @@ curl http://localhost:8091/actuator/health
 | `docker: permission denied` | Socket Docker non monté | Vérifier le volume `/var/run/docker.sock` dans le docker-compose |
 | `Cannot connect to sonarqube` | URL réseau incorrecte | Utiliser `http://sonarqube:9000` (réseau `ci-net`), pas `localhost` |
 | `Credentials not found` | ID credential incorrect | Vérifier que l'ID correspond exactement à ce qui est dans le Jenkinsfile |
+| `Vault credentials not found for 'vault-approle'` | `03-vault.groovy` n'a pas tourné | `docker logs vault-init` puis `docker restart jenkins` |
+| `permission denied` (withVault) | Chemin hors policy ou secret absent | Vérifier `secret/ci/...` dans Vault et `ci/vault/jenkins-policy.hcl` |
+| `invalid role or secret ID` | Vault redémarré (mode dev = mémoire) | `docker compose -f ci/docker-compose-ci-tools.yml up -d` (relance `vault-init`) |
 
 ---
 
@@ -420,6 +427,7 @@ curl http://localhost:8091/actuator/health
 |---|---|---|
 | Jenkins | http://localhost:9090 | admin / admin123 |
 | SonarQube | http://localhost:9000 | admin / admin123 |
+| Vault | http://localhost:8200 | token `root` (mode dev) |
 | App UAT | http://localhost:8091 | — |
 | App PREPROD | http://localhost:8092 | — |
 

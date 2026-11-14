@@ -1,0 +1,706 @@
+% =============================================================================
+% Documentation — Intégration de HashiCorp Vault dans le pipeline CI/CD Jenkins
+% Compilation : pdflatex vault-documentation.tex   (2 passes pour la table des matières)
+%               ou import direct sur Overleaf
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[french]{babel}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,babel}
+\usepackage[hidelinks]{hyperref}
+
+% --- Couleurs -----------------------------------------------------------------
+\definecolor{vaultyellow}{HTML}{FFD814}
+\definecolor{vaultdark}{HTML}{1F2937}
+\definecolor{codebg}{HTML}{F6F8FA}
+\definecolor{codeframe}{HTML}{D0D7DE}
+\definecolor{kw}{HTML}{0550AE}
+\definecolor{str}{HTML}{0A3069}
+\definecolor{cmt}{HTML}{6E7781}
+\definecolor{okgreen}{HTML}{1A7F37}
+\definecolor{warnred}{HTML}{CF222E}
+
+% --- Listings -----------------------------------------------------------------
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single, rulecolor=\color{codeframe},
+  keywordstyle=\color{kw}\bfseries,
+  stringstyle=\color{str},
+  commentstyle=\color{cmt}\itshape,
+  breaklines=true, breakatwhitespace=true,
+  columns=fullflexible, keepspaces=true,
+  showstringspaces=false,
+  xleftmargin=4pt, xrightmargin=4pt,
+  aboveskip=8pt, belowskip=8pt,
+  literate=
+    {é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {à}{{\`a}}1 {â}{{\^a}}1
+    {ç}{{\c{c}}}1 {ù}{{\`u}}1 {ô}{{\^o}}1 {î}{{\^i}}1 {É}{{\'E}}1
+    {→}{{$\rightarrow$}}1 {⚠}{{!}}1
+}
+\lstdefinelanguage{yaml}{
+  keywords={true,false,null},
+  sensitive=true,
+  comment=[l]{\#},
+  morestring=[b]",
+  morestring=[b]'
+}
+\lstdefinelanguage{hcl}{
+  keywords={path,capabilities},
+  comment=[l]{\#},
+  morestring=[b]"
+}
+\lstdefinelanguage{groovy}{
+  keywords={def,new,return,import,if,else,try,catch,String,withVault,sh},
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  morestring=[b]'
+}
+
+% --- Encadrés -----------------------------------------------------------------
+\newtcolorbox{note}[1][Note]{colback=blue!4,colframe=kw,fonttitle=\bfseries,title=#1}
+\newtcolorbox{attention}[1][Attention]{colback=red!4,colframe=warnred,fonttitle=\bfseries,title=#1}
+\newtcolorbox{retenir}[1][À retenir]{colback=green!4,colframe=okgreen,fonttitle=\bfseries,title=#1}
+
+% --- En-têtes -----------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small HashiCorp Vault — Pipeline CI/CD}
+\fancyhead[R]{\small Demo Sécurité App Moderne}
+\fancyfoot[C]{\thepage}
+
+\newcommand{\vpath}[1]{\texttt{#1}}
+
+\title{\textbf{Intégration de HashiCorp Vault\\dans le pipeline CI/CD Jenkins}\\[0.4em]
+       \large Gestion centralisée des secrets — Guide technique}
+\author{Demo Sécurité App Moderne}
+\date{\today}
+
+% =============================================================================
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+Ce document explique pourquoi et comment HashiCorp Vault a été ajouté à la chaîne
+CI/CD (Jenkins, SonarQube, OWASP Dependency-Check, Trivy, Docker Hub). Les secrets du
+pipeline (token Docker Hub, clé NVD, secrets clients Keycloak) ne sont plus saisis
+manuellement dans Jenkins : ils sont stockés dans Vault et lus par le pipeline au
+moment du build, via une identité machine (\emph{AppRole}) limitée par une
+\emph{policy} en lecture seule. Le document couvre les concepts, l'architecture, chaque
+fichier modifié, le flux d'exécution, l'exploitation et les différences entre le mode
+démonstration et une installation de production.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Contexte et objectifs}
+% =============================================================================
+
+\subsection{Le problème des secrets dans un pipeline}
+
+Un pipeline CI/CD manipule de nombreux secrets : identifiants de registre Docker,
+clés d'API, secrets OAuth2/OIDC, mots de passe de bases de données\ldots{} Avant
+l'intégration de Vault, ces secrets étaient enregistrés à la main dans
+\emph{Jenkins Credentials}, ce qui pose plusieurs problèmes :
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Dispersion} : chaque outil (Jenkins, applications, scripts) possède sa
+        propre copie des secrets ;
+  \item \textbf{Traçabilité faible} : difficile de savoir qui a lu quel secret et quand ;
+  \item \textbf{Rotation pénible} : changer un mot de passe impose de le modifier partout ;
+  \item \textbf{Reproductibilité} : à chaque réinstallation de Jenkins, il faut ressaisir
+        les credentials manuellement ;
+  \item \textbf{Risque de fuite} : tentation de mettre les secrets dans le code, les
+        fichiers \texttt{docker-compose} ou les variables d'environnement en clair.
+\end{itemize}
+
+\subsection{Objectifs}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Centraliser} tous les secrets du pipeline dans un coffre-fort unique ;
+  \item \textbf{Authentifier} Jenkins comme une machine, sans mot de passe dans le code ;
+  \item Appliquer le \textbf{principe du moindre privilège} : Jenkins ne peut que
+        \emph{lire} les secrets dont il a besoin ;
+  \item \textbf{Automatiser} entièrement la configuration (aucune action manuelle dans
+        Jenkins) ;
+  \item Ne \textbf{jamais} versionner de secret dans Git.
+\end{enumerate}
+
+% =============================================================================
+\section{Concepts clés de Vault}
+% =============================================================================
+
+\begin{description}[leftmargin=0pt, style=nextline]
+  \item[Secret engine KV v2]
+    Moteur de stockage clé/valeur versionné. En mode dev, il est monté sur
+    \vpath{secret/}. Un secret est un ensemble de paires clé/valeur à un chemin donné,
+    par exemple \vpath{secret/ci/dockerhub} contient \texttt{username} et
+    \texttt{password}. En KV v2, l'API insère \vpath{data/} dans le chemin :
+    \vpath{secret/data/ci/dockerhub}.
+
+  \item[Méthode d'authentification (auth method)]
+    Manière dont un client prouve son identité à Vault : token, userpass, LDAP, OIDC,
+    Kubernetes, \textbf{AppRole}\ldots
+
+  \item[AppRole]
+    Méthode d'authentification conçue pour les \textbf{machines et applications}.
+    Elle repose sur deux éléments :
+    \begin{itemize}
+      \item \texttt{role\_id} : identifiant du rôle (équivalent d'un nom d'utilisateur,
+            non secret) ;
+      \item \texttt{secret\_id} : secret associé (équivalent d'un mot de passe).
+    \end{itemize}
+
+  \item[Policy]
+    Règles écrites en HCL qui définissent, chemin par chemin, les opérations autorisées
+    (\texttt{read}, \texttt{create}, \texttt{update}, \texttt{delete}, \texttt{list}).
+    Tout ce qui n'est pas explicitement autorisé est \textbf{refusé}.
+
+  \item[Token]
+    Après authentification, Vault délivre un token \textbf{temporaire} (TTL) auquel sont
+    attachées les policies. C'est ce token qui est utilisé pour lire les secrets.
+
+  \item[Seal / Unseal]
+    Au démarrage, Vault est \emph{scellé} : ses données sont chiffrées et il ne peut pas
+    les lire. Il doit être \emph{descellé} (clés d'unseal ou auto-unseal via un KMS).
+    Le mode dev démarre directement descellé.
+\end{description}
+
+% =============================================================================
+\section{Architecture}
+% =============================================================================
+
+\subsection{Vue d'ensemble}
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=1.2cm and 1.5cm,
+  box/.style={draw, rounded corners, thick, minimum width=2.9cm, minimum height=1.1cm,
+              align=center, font=\small},
+  file/.style={box, fill=codebg, draw=codeframe},
+  vault/.style={box, fill=vaultyellow!70, draw=vaultdark},
+  svc/.style={box, fill=blue!8, draw=kw},
+  arr/.style={-{Stealth[length=3mm]}, thick},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt}
+]
+  \node[file]  (env)   {\texttt{secrets.env}\\\scriptsize(local, ignoré par Git)};
+  \node[svc,   right=of env]   (init)  {\textbf{vault-init}\\\scriptsize(one-shot)};
+  \node[vault, right=of init]  (vault) {\textbf{Vault}\\\scriptsize KV v2 + AppRole};
+  \node[file,  below=1.6cm of init]  (vol)  {volume\\\texttt{vault\_approle}};
+  \node[svc,   below=1.6cm of vault] (jenk) {\textbf{Jenkins}\\\scriptsize plugin Vault};
+  \node[box,   right=of jenk, fill=green!6, draw=okgreen] (pipe) {Pipeline\\\texttt{withVault}};
+
+  \draw[arr] (env) -- node[lbl, above]{valeurs} (init);
+  \draw[arr] (init) -- node[lbl, above]{configure\\(token root)} (vault);
+  \draw[arr] (init) -- node[lbl, left]{écrit\\role\_id / secret\_id} (vol);
+  \draw[arr] (vol) -- node[lbl, below]{lu au démarrage} (jenk);
+  \draw[arr] (jenk) -- node[lbl, right]{AppRole\\login} (vault);
+  \draw[arr] (jenk) -- node[lbl, below]{secrets} (pipe);
+\end{tikzpicture}
+\end{center}
+
+\subsection{Ordre de démarrage des conteneurs}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{c l X}
+\toprule
+\textbf{Ordre} & \textbf{Conteneur} & \textbf{Rôle} \\
+\midrule
+1 & \texttt{vault}      & Serveur Vault (mode dev), port 8200 \\
+2 & \texttt{vault-init} & Configure Vault (AppRole, policy, secrets) puis s'arrête \\
+3 & \texttt{jenkins}    & Démarre uniquement si \texttt{vault-init} s'est terminé avec succès \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Cet ordre est garanti par les conditions \texttt{depends\_on} de Docker Compose :
+\texttt{vault-init} attend que \texttt{vault} soit \emph{healthy}, et \texttt{jenkins}
+attend que \texttt{vault-init} soit \emph{completed\_successfully}.
+
+\subsection{Fichiers concernés}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{>{\ttfamily\small}l X}
+\toprule
+\textrm{\textbf{Fichier}} & \textbf{Rôle} \\
+\midrule
+ci/docker-compose-ci-tools.yml          & Ajout des services \texttt{vault} et \texttt{vault-init}, du volume partagé \\
+ci/vault/init.sh                        & Script d'initialisation de Vault \\
+ci/vault/jenkins-policy.hcl             & Policy lecture seule pour Jenkins \\
+ci/vault/secrets.env.example            & Modèle des valeurs de secrets \\
+ci/jenkins/plugins.txt                  & Ajout du plugin \texttt{hashicorp-vault-plugin} \\
+ci/jenkins/init.groovy.d/03-vault.groovy & Configuration automatique du plugin dans Jenkins \\
+Jenkinsfile                             & \texttt{withCredentials} remplacé par \texttt{withVault} \\
+.gitignore                              & Exclusion de \texttt{ci/vault/secrets.env} \\
+.gitattributes                          & Fins de ligne LF forcées pour les scripts \texttt{*.sh} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% =============================================================================
+\section{Mise en œuvre détaillée}
+% =============================================================================
+
+\subsection{Étape 1 — Le serveur Vault}
+
+Service ajouté dans \vpath{ci/docker-compose-ci-tools.yml} :
+
+\begin{lstlisting}[language=yaml]
+vault:
+  image: hashicorp/vault:1.17
+  container_name: vault
+  command: server -dev
+  ports:
+    - "8200:8200"
+  environment:
+    VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-root}
+    VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+  cap_add:
+    - IPC_LOCK
+  networks: [ci-net]
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health || exit 1"]
+\end{lstlisting}
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{server -dev} : mode développement, stockage en mémoire, déjà descellé,
+        token administrateur fixe ;
+  \item \texttt{VAULT\_DEV\_ROOT\_TOKEN\_ID} : valeur du token root (\texttt{root} par
+        défaut, surchargeable par la variable \texttt{VAULT\_ROOT\_TOKEN}) ;
+  \item \texttt{cap\_add: IPC\_LOCK} : autorise Vault à verrouiller sa mémoire pour
+        empêcher que des secrets soient écrits dans le \emph{swap} ;
+  \item \texttt{networks: [ci-net]} : Jenkins joint Vault par son nom DNS
+        \texttt{http://vault:8200}.
+\end{itemize}
+
+\subsection{Étape 2 — L'initialisation automatique (\texttt{vault-init})}
+
+\begin{lstlisting}[language=yaml]
+vault-init:
+  image: hashicorp/vault:1.17
+  user: root
+  entrypoint: ["/bin/sh", "/vault/config/init.sh"]
+  environment:
+    VAULT_ADDR: http://vault:8200
+    VAULT_TOKEN: ${VAULT_ROOT_TOKEN:-root}
+  env_file:
+    - path: ./vault/secrets.env
+      required: false
+  volumes:
+    - ./vault/init.sh:/vault/config/init.sh:ro
+    - ./vault/jenkins-policy.hcl:/vault/config/jenkins-policy.hcl:ro
+    - vault_approle:/vault/approle
+  depends_on:
+    vault:
+      condition: service_healthy
+  restart: "no"
+\end{lstlisting}
+
+Ce conteneur réutilise l'image Vault (qui contient la CLI \texttt{vault}), exécute
+\vpath{init.sh} une seule fois, puis s'arrête. Le script est \textbf{idempotent} : il peut
+être relancé à chaque \texttt{docker compose up} sans effet indésirable.
+
+\subsubsection*{2.a — Création de l'AppRole Jenkins}
+
+\begin{lstlisting}[language=bash]
+vault auth list | grep -q '^approle/' || vault auth enable approle
+vault policy write jenkins-ci /vault/config/jenkins-policy.hcl
+vault write auth/approle/role/jenkins-ci \
+    token_policies=jenkins-ci token_ttl=1h token_max_ttl=4h secret_id_ttl=0
+vault write auth/approle/role/jenkins-ci/role-id role_id=jenkins-ci
+\end{lstlisting}
+
+\begin{itemize}[leftmargin=*]
+  \item active la méthode AppRole si elle ne l'est pas déjà ;
+  \item enregistre la policy \texttt{jenkins-ci} ;
+  \item crée le rôle : les tokens délivrés porteront la policy \texttt{jenkins-ci},
+        vivront 1\,h (4\,h maximum) ;
+  \item fixe un \texttt{role\_id} lisible et stable : \texttt{jenkins-ci}.
+\end{itemize}
+
+\subsubsection*{2.b — Génération d'un \texttt{secret\_id} stable}
+
+\begin{lstlisting}[language=bash]
+[ -s "$APPROLE_DIR/secret_id" ] || \
+    cat /proc/sys/kernel/random/uuid > "$APPROLE_DIR/secret_id"
+echo "$ROLE" > "$APPROLE_DIR/role_id"
+
+SECRET_ID=$(cat "$APPROLE_DIR/secret_id")
+vault write "auth/approle/role/$ROLE/custom-secret-id" secret_id="$SECRET_ID"
+# Vérifie que Jenkins pourra réellement s'authentifier
+vault write auth/approle/login role_id="$ROLE" secret_id="$SECRET_ID"
+\end{lstlisting}
+
+Le \texttt{secret\_id} est généré aléatoirement \textbf{une seule fois}, puis stocké dans
+le volume Docker \texttt{vault\_approle}. À chaque redémarrage, il est ré-enregistré dans
+Vault : Jenkins garde ainsi des identifiants valides même si Vault (en mémoire) a été
+réinitialisé. Le login de test final fait échouer \texttt{vault-init} (et donc bloque le
+démarrage de Jenkins) si l'authentification ne fonctionne pas.
+
+\begin{retenir}
+Le \texttt{secret\_id} n'apparaît \textbf{jamais} dans le code source ni dans Git : il
+transite uniquement par un volume Docker partagé entre \texttt{vault-init} (écriture)
+et \texttt{jenkins} (lecture seule).
+\end{retenir}
+
+\subsubsection*{2.c — Création des secrets}
+
+\begin{lstlisting}[language=bash]
+seed() {
+    path=$1; shift
+    if vault kv get "$path" >/dev/null 2>&1; then
+        echo "[vault-init] $path existe déjà — conservé"
+    else
+        vault kv put "$path" "$@" >/dev/null
+        echo "[vault-init] $path créé"
+    fi
+}
+
+seed secret/ci/dockerhub \
+    username="${DOCKERHUB_USERNAME:-moustaphisene}" \
+    password="${DOCKERHUB_TOKEN:-CHANGE_ME}"
+seed secret/ci/nvd api_key="${NVD_API_KEY:-CHANGE_ME}"
+\end{lstlisting}
+
+La fonction \texttt{seed} ne crée un secret que s'il n'existe pas : une valeur modifiée
+dans l'interface de Vault n'est jamais écrasée par une relance du script. Les valeurs
+proviennent du fichier local \vpath{ci/vault/secrets.env}.
+
+\subsection{Étape 3 — La policy (moindre privilège)}
+
+Fichier \vpath{ci/vault/jenkins-policy.hcl} :
+
+\begin{lstlisting}[language=hcl]
+path "secret/data/ci/*" {
+  capabilities = ["read"]
+}
+
+path "secret/metadata/ci/*" {
+  capabilities = ["read", "list"]
+}
+\end{lstlisting}
+
+Jenkins peut uniquement \textbf{lire} les secrets situés sous \vpath{secret/ci/}. Il ne
+peut ni les modifier, ni les supprimer, ni accéder à d'autres chemins. En cas de
+compromission de Jenkins, la surface d'attaque sur Vault est donc minimale.
+
+\subsection{Étape 4 — Le catalogue des secrets}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{>{\ttfamily\small}l >{\ttfamily\small}l X}
+\toprule
+\textrm{\textbf{Chemin Vault}} & \textrm{\textbf{Clés}} & \textbf{Utilisé par le stage} \\
+\midrule
+secret/ci/dockerhub        & username, password   & Docker Push, UAT Deploy, PREPROD Deploy \\
+secret/ci/nvd              & api\_key             & OWASP Dependency Check \\
+secret/ci/keycloak-uat     & url, client\_secret  & UAT - Deploy \\
+secret/ci/keycloak-preprod & url, client\_secret  & PREPROD - Deploy \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Étape 5 — Configuration de Jenkins}
+
+\subsubsection*{5.a — Le plugin}
+
+Ajout dans \vpath{ci/jenkins/plugins.txt}, installé lors du build de l'image :
+
+\begin{lstlisting}
+# --- Gestion des secrets ---
+hashicorp-vault-plugin
+\end{lstlisting}
+
+\subsubsection*{5.b — Volume et variables du service Jenkins}
+
+\begin{lstlisting}[language=yaml]
+jenkins:
+  volumes:
+    - vault_approle:/var/jenkins_vault:ro     # role_id / secret_id AppRole
+  environment:
+    - VAULT_ADDR=http://vault:8200
+  depends_on:
+    vault-init:
+      condition: service_completed_successfully
+\end{lstlisting}
+
+\subsubsection*{5.c — Script d'initialisation Groovy}
+
+Le script \vpath{ci/jenkins/init.groovy.d/03-vault.groovy} s'exécute à chaque démarrage
+de Jenkins :
+
+\begin{lstlisting}[language=groovy]
+def cred = new VaultAppRoleCredential(
+    CredentialsScope.GLOBAL, 'vault-approle', 'AppRole Jenkins -> Vault',
+    roleIdFile.text.trim(), Secret.fromString(secretIdFile.text.trim()), 'approle')
+// ... ajout ou mise à jour dans le store global
+
+def cfg = new VaultConfiguration()
+cfg.setVaultUrl(System.getenv('VAULT_ADDR') ?: 'http://vault:8200')
+cfg.setVaultCredentialId('vault-approle')
+cfg.setEngineVersion(2)
+GlobalConfiguration.all().get(GlobalVaultConfiguration).setConfiguration(cfg)
+\end{lstlisting}
+
+Il lit le \texttt{role\_id} et le \texttt{secret\_id} dans le volume, crée (ou met à
+jour) le credential \texttt{vault-approle}, puis configure globalement le plugin (URL,
+credential, KV version 2). \textbf{Aucune configuration manuelle n'est nécessaire.}
+
+\subsection{Étape 6 — Utilisation dans le Jenkinsfile}
+
+Des fonctions décrivent, pour chaque groupe de secrets, la correspondance entre une clé
+Vault et une variable d'environnement :
+
+\begin{lstlisting}[language=groovy]
+def dockerHubSecrets() {
+    return [[path: 'secret/ci/dockerhub', secretValues: [
+        [envVar: 'DOCKER_USER', vaultKey: 'username'],
+        [envVar: 'DOCKER_PASS', vaultKey: 'password']
+    ]]]
+}
+
+def keycloakSecrets(String env) {
+    return [[path: "secret/ci/keycloak-${env}", secretValues: [
+        [envVar: 'KEYCLOAK_URL', vaultKey: 'url'],
+        [envVar: 'KC_SECRET',    vaultKey: 'client_secret']
+    ]]]
+}
+\end{lstlisting}
+
+\paragraph{Avant (Jenkins Credentials)}
+\begin{lstlisting}[language=groovy]
+withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                 usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+    sh 'echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin'
+}
+\end{lstlisting}
+
+\paragraph{Après (Vault)}
+\begin{lstlisting}[language=groovy]
+withVault(vaultSecrets: dockerHubSecrets() + keycloakSecrets('uat')) {
+    sh 'echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin'
+}
+\end{lstlisting}
+
+\begin{note}
+Les fonctions sont déclarées avec \texttt{def nom() \{ \ldots \}} plutôt qu'avec des
+variables \texttt{def x = \ldots} : dans un pipeline déclaratif, une variable locale
+déclarée hors du bloc \texttt{pipeline \{\}} n'est pas toujours visible à l'intérieur,
+alors qu'une méthode l'est toujours.
+\end{note}
+
+Les secrets n'existent dans l'environnement \textbf{que pendant l'exécution du bloc}
+\texttt{withVault} et sont automatiquement masqués (\texttt{****}) dans les logs.
+
+% =============================================================================
+\section{Flux d'exécution pendant un build}
+% =============================================================================
+
+\begin{center}
+\begin{tikzpicture}[
+  font=\small,
+  actor/.style={draw, thick, rounded corners, minimum width=2.6cm, minimum height=0.8cm,
+                align=center},
+  msg/.style={-{Stealth[length=2.5mm]}, thick},
+  ret/.style={-{Stealth[length=2.5mm]}, thick, dashed},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1pt}
+]
+  \node[actor, fill=green!6, draw=okgreen] (p) at (0,0)   {Pipeline};
+  \node[actor, fill=blue!8,  draw=kw]      (j) at (4.5,0) {Plugin Vault\\(Jenkins)};
+  \node[actor, fill=vaultyellow!70, draw=vaultdark] (v) at (9,0) {Vault};
+
+  \foreach \n in {p,j,v} \draw[gray, dashed] (\n.south) -- ++(0,-6.4);
+
+  \draw[msg] (0,-1.1)   -- node[lbl, above]{1. \texttt{withVault(\ldots)}} (4.5,-1.1);
+  \draw[msg] (4.5,-2.0) -- node[lbl, above]{2. login AppRole (role\_id + secret\_id)} (9,-2.0);
+  \draw[ret] (9,-2.9)   -- node[lbl, above]{3. token temporaire (TTL 1\,h, policy jenkins-ci)} (4.5,-2.9);
+  \draw[msg] (4.5,-3.8) -- node[lbl, above]{4. lecture \texttt{secret/data/ci/dockerhub}} (9,-3.8);
+  \draw[ret] (9,-4.7)   -- node[lbl, above]{5. \{username, password\}} (4.5,-4.7);
+  \draw[ret] (4.5,-5.6) -- node[lbl, above]{6. variables masquées} (0,-5.6);
+\end{tikzpicture}
+\end{center}
+
+\begin{enumerate}[leftmargin=*]
+  \item le pipeline entre dans un bloc \texttt{withVault} ;
+  \item le plugin s'authentifie auprès de Vault avec le couple \texttt{role\_id} /
+        \texttt{secret\_id} ;
+  \item Vault vérifie l'identité et délivre un \textbf{token temporaire} limité par la
+        policy \texttt{jenkins-ci} ;
+  \item le plugin lit le secret demandé avec ce token ;
+  \item Vault renvoie les valeurs (uniquement si la policy l'autorise) ;
+  \item les valeurs sont injectées dans les variables d'environnement, masquées dans
+        les logs, puis supprimées à la sortie du bloc.
+\end{enumerate}
+
+% =============================================================================
+\section{Guide d'utilisation}
+% =============================================================================
+
+\subsection{Premier démarrage}
+
+\begin{lstlisting}[language=bash]
+# 1. Préparer les secrets (fichier ignoré par Git)
+cp ci/vault/secrets.env.example ci/vault/secrets.env
+#    puis éditer : DOCKERHUB_TOKEN, NVD_API_KEY, KEYCLOAK_CLIENT_SECRET_*...
+
+# 2. Construire et démarrer la stack CI
+docker compose -f ci/docker-compose-ci-tools.yml up -d --build
+
+# 3. Vérifier l'initialisation
+docker logs vault-init                              # "[vault-init] Terminé"
+docker logs jenkins 2>&1 | grep "\[INIT\] Vault"    # "Vault configuré → ..."
+\end{lstlisting}
+
+\subsection{Contenu de \texttt{secrets.env}}
+
+\begin{lstlisting}
+DOCKERHUB_USERNAME=moustaphisene
+DOCKERHUB_TOKEN=
+NVD_API_KEY=
+KEYCLOAK_URL_UAT=http://host.docker.internal:8080
+KEYCLOAK_CLIENT_SECRET_UAT=
+KEYCLOAK_URL_PREPROD=http://host.docker.internal:8080
+KEYCLOAK_CLIENT_SECRET_PREPROD=
+\end{lstlisting}
+
+\subsection{Consulter et modifier les secrets}
+
+\paragraph{Interface web} \url{http://localhost:8200}, méthode \emph{Token}, valeur
+\texttt{root}, puis \vpath{secret/} $\rightarrow$ \vpath{ci/}.
+
+\paragraph{Ligne de commande}
+\begin{lstlisting}[language=bash]
+# Lire un secret
+docker exec -e VAULT_TOKEN=root vault vault kv get secret/ci/dockerhub
+
+# Modifier une seule clé (les autres sont conservées)
+docker exec -e VAULT_TOKEN=root vault vault kv patch secret/ci/dockerhub password=<token>
+
+# Historique des versions (KV v2)
+docker exec -e VAULT_TOKEN=root vault vault kv metadata get secret/ci/dockerhub
+
+# Tester les droits de Jenkins : doit échouer (lecture seule)
+docker exec vault sh -c 'export VAULT_TOKEN=$(vault write -field=token \
+    auth/approle/login role_id=jenkins-ci secret_id=<secret_id>); \
+    vault kv put secret/ci/dockerhub password=x'
+\end{lstlisting}
+
+% =============================================================================
+\section{Dépannage}
+% =============================================================================
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{4.2cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X}
+\toprule
+\textbf{Symptôme} & \textbf{Cause probable} & \textbf{Solution} \\
+\midrule
+Jenkins ne démarre pas & \texttt{vault-init} en échec & \texttt{docker logs vault-init} \\
+\texttt{Vault credentials not found for 'vault-approle'} & \texttt{03-vault.groovy} n'a pas été exécuté ou a échoué & Vérifier \texttt{vault-init}, puis \texttt{docker restart jenkins} \\
+\texttt{permission denied} dans \texttt{withVault} & Chemin hors policy ou secret absent & Vérifier le chemin dans Vault et \texttt{jenkins-policy.hcl} \\
+\texttt{invalid role or secret ID} & Vault redémarré (mémoire vidée) & \texttt{docker compose \ldots{} up -d} pour relancer \texttt{vault-init} \\
+\texttt{init.sh: not found} ou \texttt{\$'\textbackslash r'} & Fins de ligne CRLF (Windows) & \texttt{.gitattributes} force LF ; refaire un checkout du fichier \\
+Erreur sur \texttt{env\_file.required} & Docker Compose trop ancien & Mettre à jour vers Compose $\geq$ 2.24 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% =============================================================================
+\section{Sécurité : mode démonstration vs production}
+% =============================================================================
+
+\begin{attention}[Mode dev — démonstration uniquement]
+Le mode \texttt{-dev} stocke toutes les données \textbf{en mémoire} : un redémarrage du
+conteneur \texttt{vault} efface tous les secrets (ils sont recréés par
+\texttt{vault-init} depuis \texttt{secrets.env}). Le token \texttt{root} est fixe et
+connu, la communication se fait en HTTP. \textbf{Ne jamais utiliser ce mode en
+production.}
+\end{attention}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{3.3cm} X X}
+\toprule
+\textbf{Aspect} & \textbf{Ce projet (mode dev)} & \textbf{Production} \\
+\midrule
+Stockage        & En mémoire                      & Persistant (Integrated Storage / Raft), haute disponibilité \\
+Transport       & HTTP                            & TLS obligatoire (certificats) \\
+Descellement    & Automatique (dev)               & Clés de Shamir ou auto-unseal (AWS KMS, Azure Key Vault\ldots) \\
+Accès admin     & Token \texttt{root} fixe        & Token root révoqué ; humains via OIDC/LDAP + MFA \\
+\texttt{secret\_id} & Permanent (\texttt{secret\_id\_ttl=0}) & Courte durée, usage limité, \emph{response wrapping} \\
+Audit           & Non activé                      & \texttt{vault audit enable file} $\rightarrow$ SIEM \\
+Secrets         & Statiques                       & Dynamiques quand c'est possible (bases de données, cloud) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Bénéfices obtenus}
+
+\begin{itemize}[leftmargin=*]
+  \item[\textcolor{okgreen}{\checkmark}] Plus aucun secret saisi dans Jenkins ni versionné dans Git ;
+  \item[\textcolor{okgreen}{\checkmark}] Authentification machine (AppRole) avec tokens à durée de vie limitée ;
+  \item[\textcolor{okgreen}{\checkmark}] Moindre privilège : Jenkins en lecture seule sur \vpath{secret/ci/*} ;
+  \item[\textcolor{okgreen}{\checkmark}] Secrets masqués dans les logs et limités à la portée du bloc \texttt{withVault} ;
+  \item[\textcolor{okgreen}{\checkmark}] Versionnage des secrets (KV v2) et rotation centralisée ;
+  \item[\textcolor{okgreen}{\checkmark}] Configuration 100\,\% automatisée et reproductible.
+\end{itemize}
+
+\subsection{Pistes d'amélioration}
+
+\begin{enumerate}[leftmargin=*]
+  \item Passer Vault en mode serveur avec stockage Raft, TLS et auto-unseal ;
+  \item Activer l'\textbf{audit device} pour tracer chaque lecture de secret ;
+  \item Utiliser des \textbf{secrets dynamiques} (moteur \texttt{database}) pour les
+        bases PostgreSQL ;
+  \item Faire lire le secret client Keycloak directement par les applications Spring
+        Boot via \textbf{Spring Cloud Vault} ;
+  \item Gérer la configuration de Vault en \emph{Infrastructure as Code} avec Terraform.
+\end{enumerate}
+
+% =============================================================================
+\appendix
+\section{Aide-mémoire des commandes}
+% =============================================================================
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{>{\ttfamily\raggedright\arraybackslash}p{8.6cm} X}
+\toprule
+\textrm{\textbf{Commande}} & \textbf{Effet} \\
+\midrule
+vault status                               & État du serveur (scellé, version\ldots) \\
+vault auth list                            & Méthodes d'authentification activées \\
+vault policy read jenkins-ci               & Afficher la policy Jenkins \\
+vault read auth/approle/role/jenkins-ci    & Paramètres du rôle AppRole \\
+vault kv list secret/ci                    & Lister les secrets du pipeline \\
+vault kv get secret/ci/nvd                 & Lire un secret \\
+vault kv put secret/ci/nvd api\_key=\ldots  & Créer ou remplacer un secret \\
+vault kv patch secret/ci/nvd api\_key=\ldots & Modifier une clé \\
+vault kv rollback -version=1 secret/ci/nvd & Restaurer une version précédente \\
+vault token lookup                         & Informations sur le token courant \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent Dans le conteneur : préfixer par
+\texttt{docker exec -e VAULT\_TOKEN=root vault}.
+
+\end{document}

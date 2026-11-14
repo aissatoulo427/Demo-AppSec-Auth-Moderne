@@ -38,3 +38,6 @@ timestamper
 build-timeout
 antisamy-markup-formatter
 ws-cleanup
+
+# --- Gestion des secrets ---
+hashicorp-vault-plugin

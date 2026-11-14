@@ -1,9 +1,9 @@
 # =============================================================================
 # Image Jenkins custom — version fixée pour éviter les conflits de plugins
-# Jenkins LTS 2.462.3 + JDK 17 + Trivy + Maven 3.9 + plugins pré-installés
+# Jenkins LTS 2.528.3 + JDK 17 + Trivy + Maven 3.9 + plugins pré-installés
 # =============================================================================
 
-FROM jenkins/jenkins:2.504-jdk17
+FROM jenkins/jenkins:2.528.3-jdk17
 
 USER root
 

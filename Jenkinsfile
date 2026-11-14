@@ -2,17 +2,37 @@
 // Jenkins CI/CD Pipeline — POC Keycloak Spring Boot
 // Stages : DEV → OWASP → SonarQube → Trivy → Docker → UAT → PREPROD
 //
-// Credentials Jenkins requises (Manage Jenkins > Credentials) :
-//   dockerhub-credentials         → Username/Password (Docker Hub)
-//   nvd-api-key                   → Secret text (OWASP NVD — optionnel mais recommandé)
-//   keycloak-url-uat              → Secret text (ex: http://keycloak-uat:8080)
-//   keycloak-url-preprod          → Secret text (ex: http://keycloak-preprod:8080)
-//   keycloak-client-secret-uat    → Secret text
-//   keycloak-client-secret-preprod→ Secret text
+// Secrets lus dans HashiCorp Vault (KV v2, montage "secret/") via le plugin
+// hashicorp-vault-plugin — auth AppRole "jenkins-ci" configurée automatiquement
+// par ci/jenkins/init.groovy.d/03-vault.groovy (credential "vault-approle") :
+//   secret/ci/dockerhub        → username, password   (Docker Hub)
+//   secret/ci/nvd              → api_key              (OWASP NVD)
+//   secret/ci/keycloak-uat     → url, client_secret
+//   secret/ci/keycloak-preprod → url, client_secret
 //
 // Serveur SonarQube configuré sous le nom "SonarQube" :
 //   Manage Jenkins > Configure System > SonarQube Servers
 // =============================================================================
+
+def dockerHubSecrets() {
+    return [[path: 'secret/ci/dockerhub', secretValues: [
+        [envVar: 'DOCKER_USER', vaultKey: 'username'],
+        [envVar: 'DOCKER_PASS', vaultKey: 'password']
+    ]]]
+}
+
+def nvdSecrets() {
+    return [[path: 'secret/ci/nvd', secretValues: [
+        [envVar: 'NVD_KEY', vaultKey: 'api_key']
+    ]]]
+}
+
+def keycloakSecrets(String env) {
+    return [[path: "secret/ci/keycloak-${env}", secretValues: [
+        [envVar: 'KEYCLOAK_URL', vaultKey: 'url'],
+        [envVar: 'KC_SECRET',    vaultKey: 'client_secret']
+    ]]]
+}
 
 pipeline {
 
@@ -92,8 +112,7 @@ pipeline {
         // =====================================================================
         stage('OWASP Dependency Check') {
             steps {
-                withCredentials([string(credentialsId: 'nvd-api-key',
-                                        variable: 'NVD_KEY')]) {
+                withVault(vaultSecrets: nvdSecrets()) {
                     dir('demo/app-springboot') {
                         sh '''
                             mvn org.owasp:dependency-check-maven:10.0.3:check \
@@ -282,11 +301,7 @@ pipeline {
         // =====================================================================
         stage('Docker Push') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
+                withVault(vaultSecrets: dockerHubSecrets()) {
                     sh '''
                         echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin
 
@@ -329,15 +344,7 @@ pipeline {
 
         stage('UAT - Deploy') {
             steps {
-                withCredentials([
-                    usernamePassword(credentialsId: 'dockerhub-credentials',
-                                     usernameVariable: 'DOCKER_USER',
-                                     passwordVariable: 'DOCKER_PASS'),
-                    string(credentialsId: 'keycloak-url-uat',
-                           variable: 'KEYCLOAK_URL'),
-                    string(credentialsId: 'keycloak-client-secret-uat',
-                           variable: 'KC_SECRET')
-                ]) {
+                withVault(vaultSecrets: dockerHubSecrets() + keycloakSecrets('uat')) {
                     sh '''
                         echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin
                         docker pull ${APP_IMAGE}:${IMAGE_TAG}
@@ -390,15 +397,7 @@ pipeline {
 
         stage('PREPROD - Deploy') {
             steps {
-                withCredentials([
-                    usernamePassword(credentialsId: 'dockerhub-credentials',
-                                     usernameVariable: 'DOCKER_USER',
-                                     passwordVariable: 'DOCKER_PASS'),
-                    string(credentialsId: 'keycloak-url-preprod',
-                           variable: 'KEYCLOAK_URL'),
-                    string(credentialsId: 'keycloak-client-secret-preprod',
-                           variable: 'KC_SECRET')
-                ]) {
+                withVault(vaultSecrets: dockerHubSecrets() + keycloakSecrets('preprod')) {
                     sh '''
                         echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin
                         docker pull ${APP_IMAGE}:${IMAGE_TAG}

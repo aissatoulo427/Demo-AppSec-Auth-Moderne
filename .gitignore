@@ -5,3 +5,6 @@ node_modules
 
 **/.DS_Store
 .idea/
+
+# Secrets locaux Vault
+ci/vault/secrets.env
