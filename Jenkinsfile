@@ -93,10 +93,18 @@ pipeline {
         // =====================================================================
         stage('DEV - Build & Unit Tests') {
             parallel {
-                stage('App - Package') {
+                // verify (et non plus package -DskipTests) : lance les tests et produit
+                // le rapport JaCoCo lu par SonarQube (couverture du code nouveau).
+                stage('App - Verify') {
                     steps {
                         dir('demo/app-springboot') {
-                            sh 'mvn clean package -DskipTests -B'
+                            sh 'mvn clean verify -B'
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true,
+                                  testResults: 'demo/app-springboot/target/surefire-reports/*.xml'
                         }
                     }
                 }
@@ -118,6 +126,9 @@ pipeline {
 
         // =====================================================================
         // OWASP Dependency Check — CVE score >= 7 → unstable
+        // Analyseurs désactivés (bruit dans les logs, aucun résultat utile ici) :
+        //   - OSS Index : exige désormais un compte Sonatype (sinon erreurs 401)
+        //   - .NET Assembly : projet Java, dotnet absent de l'agent
         // =====================================================================
         stage('OWASP Dependency Check') {
             steps {
@@ -128,7 +139,7 @@ pipeline {
                                 -DnvdApiKey=${NVD_KEY} \
                                 -DfailBuildOnCVSS=10 \
                                 -DcveValidForHours=12 \
-                                -Dformat=ALL \
+                                -Dformat=ALL                                 -DossindexAnalyzerEnabled=false                                 -DassemblyAnalyzerEnabled=false \
                                 -DsuppressionFile=owasp-suppressions.xml \
                                 -B || true
                         '''
@@ -139,7 +150,7 @@ pipeline {
                                 -DnvdApiKey=${NVD_KEY} \
                                 -DfailBuildOnCVSS=10 \
                                 -DcveValidForHours=12 \
-                                -Dformat=ALL \
+                                -Dformat=ALL                                 -DossindexAnalyzerEnabled=false                                 -DassemblyAnalyzerEnabled=false \
                                 -B || true
                         '''
                     }
@@ -157,37 +168,36 @@ pipeline {
         }
 
         // =====================================================================
-        // SonarQube — Code & Quality Gate Analysis
+        // SonarQube — Analyse + Quality Gate, un projet après l'autre
+        // Chaque analyse a son propre withSonarQubeEnv, placé dans le dossier du
+        // projet : le plugin n'y trouve qu'un report-task.txt, et waitForQualityGate
+        // attend bien le Quality Gate de CE projet. (Avant, une seule analyse
+        // groupée → seul le Quality Gate de l'app était vérifié.)
         // =====================================================================
-        stage('SonarQube Analysis') {
+        stage('SonarQube - App') {
             steps {
-                withSonarQubeEnv('SonarQube') {
-                    dir('demo/app-springboot') {
+                dir('demo/app-springboot') {
+                    withSonarQubeEnv('SonarQube') {
                         sh '''
-                            mvn ${SONAR_MVN_PLUGIN}:sonar \
-                                -Dsonar.projectKey=${SONAR_KEY_APP} \
-                                -Dsonar.projectName="POC Keycloak - App" \
-                                -Dsonar.java.source=17 \
-                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                -B
+                            mvn ${SONAR_MVN_PLUGIN}:sonar                                 -Dsonar.projectKey=${SONAR_KEY_APP}                                 -Dsonar.projectName="POC Keycloak - App"                                 -Dsonar.java.source=17                                 -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml                                 -B
                         '''
                     }
-                    dir('demo/service-springboot-rest') {
-                        sh '''
-                            mvn ${SONAR_MVN_PLUGIN}:sonar \
-                                -Dsonar.projectKey=${SONAR_KEY_SVC} \
-                                -Dsonar.projectName="POC Keycloak - Service REST" \
-                                -Dsonar.java.source=17 \
-                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                -B
-                        '''
-                    }
+                }
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Quality Gate') {
+        stage('SonarQube - Service') {
             steps {
+                dir('demo/service-springboot-rest') {
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            mvn ${SONAR_MVN_PLUGIN}:sonar                                 -Dsonar.projectKey=${SONAR_KEY_SVC}                                 -Dsonar.projectName="POC Keycloak - Service REST"                                 -Dsonar.java.source=17                                 -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml                                 -B
+                        '''
+                    }
+                }
                 timeout(time: 10, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
