@@ -8,11 +8,11 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
 
 @Controller
 public class PlanetsController {
@@ -20,16 +20,14 @@ public class PlanetsController {
     private static final Logger logger = LoggerFactory.getLogger(PlanetsController.class);
 
     private final PlanetsService planetsService;
-    private final HttpServletRequest request;
 
     /**
      * Injection par constructeur : bonne pratique recommandée par Spring.
      * Avantages : les dépendances sont explicites, la classe est testable sans conteneur Spring,
      * et les champs peuvent être déclarés final (immuabilité).
      */
-    public PlanetsController(PlanetsService planetsService, HttpServletRequest request) {
+    public PlanetsController(PlanetsService planetsService) {
         this.planetsService = planetsService;
-        this.request = request;
     }
 
     @GetMapping(value = "/")
@@ -49,8 +47,8 @@ public class PlanetsController {
     }
 
     @GetMapping("favicon.ico")
-    @ResponseBody
-    void returnNoFavicon() {
+    ResponseEntity<Void> returnNoFavicon() {
+        return ResponseEntity.noContent().build();
     }
 
     /**
