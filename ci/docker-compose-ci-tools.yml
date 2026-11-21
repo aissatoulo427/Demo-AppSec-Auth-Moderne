@@ -47,8 +47,8 @@ services:
       - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
       - VAULT_ADDR=http://vault:8200
     depends_on:
-      vault-init:
-        condition: service_completed_successfully
+      vault:
+        condition: service_healthy
     networks: [ci-net]
     restart: unless-stopped
     healthcheck:
@@ -113,50 +113,41 @@ services:
   # ---------------------------------------------------------------------------
   # HashiCorp Vault — mode dev (stockage en mémoire, déjà "unsealed")
   # ⚠ Ne jamais utiliser le mode dev en production.
+  #
+  # Le mode dev perd tout à chaque redémarrage : start.sh rejoue donc init.sh
+  # (AppRole Jenkins + policy + secrets) à chaque démarrage du conteneur.
+  # Le healthcheck ne passe "healthy" qu'une fois l'AppRole recréé.
   # ---------------------------------------------------------------------------
   vault:
     image: hashicorp/vault:1.17
     container_name: vault
-    command: server -dev
+    user: root
+    entrypoint: ["/bin/sh", "/vault/config/start.sh"]
     ports:
       - "8200:8200"
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-root}
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
       VAULT_ADDR: http://127.0.0.1:8200   # pour la CLI : docker exec vault vault ...
-    cap_add:
-      - IPC_LOCK
-    networks: [ci-net]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # ---------------------------------------------------------------------------
-  # Vault init — AppRole Jenkins + policy + secrets (one-shot, idempotent)
-  # ---------------------------------------------------------------------------
-  vault-init:
-    image: hashicorp/vault:1.17
-    container_name: vault-init
-    user: root
-    entrypoint: ["/bin/sh", "/vault/config/init.sh"]
-    environment:
-      VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_ROOT_TOKEN:-root}
     env_file:
       - path: ./vault/secrets.env
         required: false
     volumes:
+      - ./vault/start.sh:/vault/config/start.sh:ro
       - ./vault/init.sh:/vault/config/init.sh:ro
       - ./vault/jenkins-policy.hcl:/vault/config/jenkins-policy.hcl:ro
       - vault_approle:/vault/approle
-    depends_on:
-      vault:
-        condition: service_healthy
+    cap_add:
+      - IPC_LOCK
     networks: [ci-net]
-    restart: "no"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "vault read auth/approle/role/jenkins-ci >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
 # =============================================================================
 # Réseaux & Volumes
@@ -172,4 +163,4 @@ volumes:
   sonar_extensions:
   sonar_logs:
   sonar_pgdata:
-  vault_approle:     # role_id / secret_id AppRole partagés vault-init → Jenkins
+  vault_approle:     # role_id / secret_id AppRole partagés vault → Jenkins

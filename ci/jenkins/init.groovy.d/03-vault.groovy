@@ -1,5 +1,5 @@
 // Configure le plugin HashiCorp Vault : credential AppRole + configuration globale.
-// role_id / secret_id sont générés par le conteneur vault-init (volume partagé).
+// role_id / secret_id sont générés par le conteneur vault via init.sh (volume partagé).
 import jenkins.model.*
 import com.cloudbees.plugins.credentials.*
 import com.cloudbees.plugins.credentials.domains.Domain
@@ -22,7 +22,7 @@ try {
     def credId = 'vault-approle'
     def store  = SystemCredentialsProvider.getInstance().getStore()
     def cred   = new VaultAppRoleCredential(
-        CredentialsScope.GLOBAL, credId, 'AppRole Jenkins -> Vault (genere par vault-init)',
+        CredentialsScope.GLOBAL, credId, 'AppRole Jenkins -> Vault (genere par vault/init.sh)',
         roleIdFile.text.trim(), Secret.fromString(secretIdFile.text.trim()), 'approle')
 
     def existing = store.getCredentials(Domain.global()).find { it.id == credId }

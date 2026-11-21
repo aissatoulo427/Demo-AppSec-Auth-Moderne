@@ -157,15 +157,16 @@ Les secrets ne sont **plus** saisis dans Jenkins Credentials : ils sont stockés
 **HashiCorp Vault** (conteneur `vault`, mode dev) et lus par le pipeline via `withVault`.
 
 ```
-secrets.env ──► vault-init ──► Vault (KV v2)  ◄── AppRole "jenkins-ci" (lecture seule) ── Jenkins
+secrets.env ──► vault (start.sh → init.sh) ──► Vault (KV v2)  ◄── AppRole "jenkins-ci" (lecture seule) ── Jenkins
 ```
 
 | Élément | Rôle |
 |---|---|
+| `ci/vault/start.sh` | Point d'entrée du conteneur `vault` : démarre Vault puis rejoue `init.sh` à chaque démarrage |
 | `ci/vault/init.sh` | Active AppRole, crée la policy, génère le `secret_id`, peuple les secrets |
 | `ci/vault/jenkins-policy.hcl` | Policy **lecture seule** sur `secret/data/ci/*` (moindre privilège) |
 | `ci/jenkins/init.groovy.d/03-vault.groovy` | Crée le credential `vault-approle` et configure le plugin Vault |
-| volume `vault_approle` | Transmet `role_id` / `secret_id` de `vault-init` à Jenkins |
+| volume `vault_approle` | Transmet `role_id` / `secret_id` de `vault` à Jenkins |
 
 **Étape 1 — Renseigner les secrets (avant le `docker compose up`)**
 
@@ -180,7 +181,7 @@ cp ci/vault/secrets.env.example ci/vault/secrets.env   # ignoré par git
 **Étape 2 — Vérifier l'initialisation**
 
 ```bash
-docker logs vault-init      # doit finir par "[vault-init] Terminé"
+docker logs vault 2>&1 | grep vault-init   # doit finir par "[vault-init] Terminé"
 docker logs jenkins 2>&1 | grep "\[INIT\] Vault"   # "Vault configuré → http://vault:8200"
 ```
 
@@ -202,9 +203,9 @@ docker exec -e VAULT_TOKEN=root vault vault kv patch secret/ci/dockerhub passwor
 | `secret/ci/keycloak-uat` | `url`, `client_secret` | UAT - Deploy |
 | `secret/ci/keycloak-preprod` | `url`, `client_secret` | PREPROD - Deploy |
 
-> ⚠ **Mode dev** : Vault stocke tout **en mémoire**. Après un redémarrage du conteneur `vault`,
-> relancer `docker compose -f ci/docker-compose-ci-tools.yml up -d` : `vault-init` recrée
-> l'AppRole (même `secret_id`) et repeuple les secrets depuis `secrets.env`.
+> ⚠ **Mode dev** : Vault stocke tout **en mémoire**. À chaque démarrage du conteneur `vault`
+> (reboot du PC, redémarrage de Docker...), `start.sh` rejoue automatiquement `init.sh` : l'AppRole
+> est recréé (même `secret_id`) et les secrets sont repeuplés depuis `secrets.env`. Rien à relancer.
 > Les secrets modifiés via l'UI/CLI sont perdus — reporter les vraies valeurs dans `secrets.env`.
 > En production : stockage persistant (Raft), TLS, unseal (auto-unseal KMS), pas de token root.
 
@@ -415,9 +416,9 @@ curl http://localhost:8091/actuator/health
 | `docker: permission denied` | Socket Docker non monté | Vérifier le volume `/var/run/docker.sock` dans le docker-compose |
 | `Cannot connect to sonarqube` | URL réseau incorrecte | Utiliser `http://sonarqube:9000` (réseau `ci-net`), pas `localhost` |
 | `Credentials not found` | ID credential incorrect | Vérifier que l'ID correspond exactement à ce qui est dans le Jenkinsfile |
-| `Vault credentials not found for 'vault-approle'` | `03-vault.groovy` n'a pas tourné | `docker logs vault-init` puis `docker restart jenkins` |
+| `Vault credentials not found for 'vault-approle'` | `03-vault.groovy` n'a pas tourné | `docker logs vault` puis `docker restart jenkins` |
 | `permission denied` (withVault) | Chemin hors policy ou secret absent | Vérifier `secret/ci/...` dans Vault et `ci/vault/jenkins-policy.hcl` |
-| `invalid role or secret ID` | Vault redémarré (mode dev = mémoire) | `docker compose -f ci/docker-compose-ci-tools.yml up -d` (relance `vault-init`) |
+| `invalid role or secret ID` | Vault redémarré (mode dev = mémoire) | `docker logs vault` : `init.sh` a-t-il fini (`[vault-init] Terminé`) ? Sinon `docker restart vault` |
 
 ---
 
