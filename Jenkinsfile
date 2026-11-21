@@ -263,9 +263,11 @@ pipeline {
 
         // =====================================================================
         // Trivy — Image Scan (avant push)
+        // Scans séquentiels : en parallèle, les deux trivy se disputent le
+        // verrou du cache partagé ("Failed to acquire cache or database lock").
         // =====================================================================
         stage('Trivy Image Scan') {
-            parallel {
+            stages {
                 stage('Scan App Image') {
                     steps {
                         sh '''

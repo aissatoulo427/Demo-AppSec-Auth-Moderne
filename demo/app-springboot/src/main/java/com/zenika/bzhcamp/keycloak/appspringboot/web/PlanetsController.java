@@ -25,6 +25,9 @@ public class PlanetsController {
      * Injection par constructeur : bonne pratique recommandée par Spring.
      * Avantages : les dépendances sont explicites, la classe est testable sans conteneur Spring,
      * et les champs peuvent être déclarés final (immuabilité).
+     *
+     * Seul PlanetsService est injecté : la requête HTTP n'est utile qu'au logout,
+     * elle est donc reçue en paramètre de handleLogout() plutôt que stockée en champ.
      */
     public PlanetsController(PlanetsService planetsService) {
         this.planetsService = planetsService;
@@ -46,6 +49,14 @@ public class PlanetsController {
         return "about";
     }
 
+    /**
+     * L'application n'a pas de favicon : on répond 204 No Content pour éviter
+     * une erreur 404 (et une redirection vers Keycloak) à chaque page chargée.
+     *
+     * ResponseEntity est écrit directement dans la réponse HTTP, sans passer par
+     * une vue Thymeleaf : pas besoin de @ResponseBody, et la classe reste un
+     * @Controller (un @RestController casserait les vues landing/about/planets).
+     */
     @GetMapping("favicon.ico")
     ResponseEntity<Void> returnNoFavicon() {
         return ResponseEntity.noContent().build();

@@ -48,7 +48,7 @@ services:
       - VAULT_ADDR=http://vault:8200
     depends_on:
       vault:
-        condition: service_healthy
+        condition: service_healthy   # attend que l'AppRole Jenkins soit recréé dans Vault
     networks: [ci-net]
     restart: unless-stopped
     healthcheck:
@@ -121,28 +121,29 @@ services:
   vault:
     image: hashicorp/vault:1.17
     container_name: vault
-    user: root
-    entrypoint: ["/bin/sh", "/vault/config/start.sh"]
+    user: root                                          # init.sh écrit role_id / secret_id dans le volume vault_approle
+    entrypoint: ["/bin/sh", "/vault/config/start.sh"]  # démarre Vault puis rejoue init.sh
     ports:
       - "8200:8200"
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-root}
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
       VAULT_ADDR: http://127.0.0.1:8200   # pour la CLI : docker exec vault vault ...
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN:-root}
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN:-root}   # utilisé par init.sh et par le healthcheck
     env_file:
-      - path: ./vault/secrets.env
+      - path: ./vault/secrets.env              # vraies valeurs des secrets (ignoré par git)
         required: false
     volumes:
       - ./vault/start.sh:/vault/config/start.sh:ro
       - ./vault/init.sh:/vault/config/init.sh:ro
       - ./vault/jenkins-policy.hcl:/vault/config/jenkins-policy.hcl:ro
-      - vault_approle:/vault/approle
+      - vault_approle:/vault/approle             # partagé avec Jenkins (lecture seule côté Jenkins)
     cap_add:
       - IPC_LOCK
     networks: [ci-net]
     restart: unless-stopped
     healthcheck:
+      # "healthy" seulement quand init.sh a recréé l'AppRole (pas juste Vault démarré)
       test: ["CMD-SHELL", "vault read auth/approle/role/jenkins-ci >/dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 5s
